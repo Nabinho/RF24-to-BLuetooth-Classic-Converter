@@ -1,5 +1,5 @@
 /***********************************************************************************************************************
- * 
+ *
  * Written by Nabinho - 2023
  *
  *  Bluetooth Char Messages Reference - https://play.google.com/store/apps/details?id=braulio.calle.bluetoothRCcontroller&hl=pt_BR&gl=US
@@ -24,9 +24,18 @@ BluetoothSerial SerialBT;
 MMA8452Q accelerometer;
 
 // Peripheral device parameters
-uint8_t BT_address[6] = {0x00, 0x06, 0x66, 0x4D, 0x61, 0x4F}; // BlueSMiRF Omni Robot V1.0
-String name = "<BlueSMiRF>";
+uint8_t BT_address[4][6] = {{0x00, 0x06, 0x66, 0x4D, 0x61, 0x4F},  // BlueSMiRF Omni Robot V1.0
+                            {0x98, 0xD3, 0x51, 0xFD, 0x90, 0xC8},  // Keyestudio HC-06
+                            {0x00, 0x10, 0x06, 0x29, 0x00, 0x34},  // Bluetooth Bee 1
+                            {0x00, 0x10, 0x06, 0x29, 0x00, 0x90}}; // Bluetooth Bee 2
 bool connected;
+uint8_t device = 0;
+
+// Device selector DIP switch pins
+const uint8_t DEVICE_SEL_PIN1 = 14;
+const uint8_t DEVICE_SEL_PIN2 = 26;
+bool reading_device_sel1;
+bool reading_device_sel2;
 
 // ESP32 SPI Pins
 const uint8_t MY_MISO = 19;
@@ -114,7 +123,6 @@ uint8_t last_speed_max = 0;
 // LED_BUILTIN pin
 const uint8_t LED_PIN = 27;
 const uint8_t SELECTOR_PIN = 25;
-bool mode = true;
 
 const uint8_t ACCEL_READ_TIME = 50;
 unsigned long elapsed_time;
@@ -131,16 +139,36 @@ void setup()
   // LED_BUILTIN initialization
   pinMode(LED_PIN, OUTPUT);
   pinMode(SELECTOR_PIN, INPUT_PULLUP);
+  pinMode(DEVICE_SEL_PIN1, INPUT_PULLUP);
+  pinMode(DEVICE_SEL_PIN2, INPUT_PULLUP);
 
-  // Check if selector is connected
-  if (digitalRead(SELECTOR_PIN) == LOW)
+  // Reads device selector DIP switch
+  reading_device_sel1 = digitalRead(DEVICE_SEL_PIN1);
+  reading_device_sel2 = digitalRead(DEVICE_SEL_PIN2);
+  Serial.println("\n\n");
+  Serial.print("SEL1: ");
+  Serial.print(reading_device_sel1);
+  Serial.print(" | SEL2: ");
+  Serial.println(reading_device_sel2);
+  if (reading_device_sel1 == 1 && reading_device_sel2 == 1)
   {
-    delay(500);
-    if (digitalRead(SELECTOR_PIN) == LOW)
-    {
-      mode = false;
-    }
+    device = 0;
   }
+  else if (reading_device_sel1 == 1 && reading_device_sel2 == 0)
+  {
+    device = 1;
+  }
+  else if (reading_device_sel1 == 0 && reading_device_sel2 == 1)
+  {
+    device = 2;
+  }
+  else if (reading_device_sel1 == 0 && reading_device_sel2 == 0)
+  {
+    device = 3;
+  }
+  
+  Serial.print("Connecting to device: ");
+  Serial.println(device);
 
   // Bluetooth classic initialization
   SerialBT.begin("Edge_RF24", true);
@@ -148,7 +176,7 @@ void setup()
   Serial.println("The device started in master mode, make sure remote BT device is on!");
 
   // Check if connected
-  connected = SerialBT.connect(BT_address);
+  connected = SerialBT.connect(BT_address[device]);
   if (connected)
   {
     Serial.println("Connected Succesfully!");
@@ -168,46 +196,41 @@ void setup()
   // This would reconnect to the name(will use address, if resolved) or address used with connect(name/address).
   SerialBT.connect();
 
-  if (mode)
-  {
-    // SPI bus configuration
-    hspi = new SPIClass(HSPI);
-    hspi->begin(MY_SCLK, MY_MISO, MY_MOSI, MY_SS);
+  // SPI bus configuration
+  hspi = new SPIClass(HSPI);
+  hspi->begin(MY_SCLK, MY_MISO, MY_MOSI, MY_SS);
 
-    // Radio Initialization
-    if (!radio.begin(hspi))
+  // Radio Initialization
+  if (!radio.begin(hspi))
+  {
+    Serial.println("Radio Initialization Failed!");
+    while (!radio.begin(hspi))
     {
-      Serial.println("Radio Initialization Failed!");
-      while (!radio.begin(hspi))
-      {
-        Serial.print(F("."));
-      }
+      Serial.print(F("."));
     }
-
-    // Configure Radio for Maximum Power
-    radio.setPALevel(RF24_PA_MAX);
-
-    // Configure Radio Payload Size
-    radio.setPayloadSize(sizeof(controller));
-
-    // Configure Radio Listening Pipe
-    radio.openWritingPipe(address[radio_number]);
-
-    // Configure Radio Channel Number
-    radio.openReadingPipe(1, address[!radio_number]);
-
-    // Configure Radio to Listen for Incoming Data
-    radio.startListening();
   }
-  else
+
+  // Configure Radio for Maximum Power
+  radio.setPALevel(RF24_PA_MAX);
+
+  // Configure Radio Payload Size
+  radio.setPayloadSize(sizeof(controller));
+
+  // Configure Radio Listening Pipe
+  radio.openWritingPipe(address[radio_number]);
+
+  // Configure Radio Channel Number
+  radio.openReadingPipe(1, address[!radio_number]);
+
+  // Configure Radio to Listen for Incoming Data
+  radio.startListening();
+
+  if (!accelerometer.init())
   {
-    if (!accelerometer.init())
+    Serial.println("Accelerometer Initialization Failed!");
+    while (!accelerometer.init())
     {
-      Serial.println("Accelerometer Initialization Failed!");
-      while (!accelerometer.init())
-      {
-        Serial.print(F("."));
-      }
+      Serial.print(F("."));
     }
   }
 
@@ -216,15 +239,12 @@ void setup()
   {
     Serial.println("Connecting...");
   }
-
-  // Initialize LED_BUILTIN
-  digitalWrite(LED_PIN, HIGH);
 }
 
 void loop()
 {
 
-  if (mode)
+  if (digitalRead(SELECTOR_PIN) == HIGH)
   {
     // Checks If New Reading Available
     if (radio.available(&channel) && SerialBT.connected())
@@ -235,6 +255,7 @@ void loop()
 
       // Updates Lest Message Time
       last_message = millis();
+      digitalWrite(LED_PIN, HIGH);
 
       //********************************************************************************************************************
       // Handle the Control when the Joysticks Heads Forward
@@ -542,7 +563,12 @@ void loop()
   }
   else
   {
-    if ((millis() - elapsed_time) > ACCEL_READ_TIME)
+    if (!SerialBT.connected())
+    {
+      digitalWrite(LED_PIN, LOW);
+      Serial.println("BLUETOOTH DISCONNECTED!!!");
+    }
+    else if ((millis() - elapsed_time) > ACCEL_READ_TIME)
     {
       // Reads accelerometer
       accelerometer.read();
@@ -604,6 +630,7 @@ void loop()
 
       // Updates timer
       elapsed_time = millis();
+      digitalWrite(LED_PIN, HIGH);
     }
   }
 }
